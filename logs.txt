@@ -1,0 +1,778 @@
+AI Development Assistant Interactions Log
+=====================================
+
+Date: [Current Date]
+
+This document contains selected interactions with AI development assistants during the development of the QA application. These interactions were primarily focused on specific technical challenges and architectural decisions.
+
+1. Initial Project Structure Discussion
+-------------------------------------
+Prompt: "I need help setting up a modern web application structure using Next.js with TypeScript. What would be the recommended project structure and key dependencies?"
+
+Response: Here's a recommended project structure and key dependencies for your Next.js TypeScript application:
+
+```typescript
+// Project Structure
+qa-app/
+├── src/
+│   ├── app/                 # App router pages
+│   │   ├── ui/             # Basic UI components
+│   │   └── features/       # Feature-specific components
+│   ├── lib/                # Utility functions and shared logic
+│   ├── types/              # TypeScript type definitions
+│   └── styles/             # Global styles
+├── public/                 # Static assets
+└── prisma/                 # Database schema and migrations
+
+// Key dependencies in package.json
+{
+  "dependencies": {
+    "next": "^14.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^5.0.0",
+    "prisma": "^5.0.0",
+    "@prisma/client": "^5.0.0",
+    "next-auth": "^4.24.0",
+    "tailwindcss": "^3.3.0",
+    "zod": "^3.22.0"
+  }
+}
+```
+
+2. Database Schema Design
+------------------------
+Prompt: "I'm designing the database schema for a QA application. I need to store questions, answers, and user interactions. What would be an optimal schema design?"
+
+Response: Here's a recommended Prisma schema for your QA application:
+
+```prisma
+// schema.prisma
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  password      String
+  questions     Question[]
+  answers       Answer[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model Question {
+  id          String    @id @default(cuid())
+  title       String
+  content     String
+  author      User      @relation(fields: [authorId], references: [id])
+  authorId    String
+  answers     Answer[]
+  tags        Tag[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Answer {
+  id          String    @id @default(cuid())
+  content     String
+  question    Question  @relation(fields: [questionId], references: [id])
+  questionId  String
+  author      User      @relation(fields: [authorId], references: [id])
+  authorId    String
+  votes       Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Tag {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  questions   Question[]
+}
+```
+
+3. Authentication Implementation
+------------------------------
+Prompt: "I need to implement email-based authentication in my Python backend. How should I set up the signup and login functionality with email and password?"
+
+Response: Here's how to implement email-based authentication using Python with FastAPI:
+
+```python
+# app/auth/auth.py
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
+from datetime import datetime, timedelta
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from typing import Optional
+import os
+from dotenv import load_dotenv
+
+from ..database import get_db
+from ..models import User
+from ..schemas import UserCreate, UserResponse, Token
+
+load_dotenv()
+
+router = APIRouter()
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# JWT Configuration
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+@router.post("/signup", response_model=UserResponse)
+def signup(user: UserCreate, db: Session = Depends(get_db)):
+    # Check if user exists
+    db_user = db.query(User).filter(User.email == user.email).first()
+    if db_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    # Create new user
+    hashed_password = get_password_hash(user.password)
+    db_user = User(
+        email=user.email,
+        name=user.name,
+        password=hashed_password
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    
+    return db_user
+
+@router.post("/token", response_model=Token)
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == form_data.username).first()
+    if not user or not verify_password(form_data.password, user.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+# app/models.py
+from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy.sql import func
+from .database import Base
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True)
+    name = Column(String)
+    password = Column(String)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+# app/schemas.py
+from pydantic import BaseModel, EmailStr
+
+class UserBase(BaseModel):
+    email: EmailStr
+    name: str
+
+class UserCreate(UserBase):
+    password: str
+
+class UserResponse(UserBase):
+    id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+# app/database.py
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+```
+
+4. API Route Structure
+---------------------
+Prompt: "I need help structuring the API routes for my QA application. What's the best way to organize endpoints for questions, answers, and user interactions?"
+
+Response: Here's a recommended API route structure using Next.js App Router:
+
+```typescript
+// app/api/questions/route.ts
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "../auth/[...nextauth]/route";
+
+export async function GET() {
+  const questions = await prisma.question.findMany({
+    include: {
+      author: true,
+      tags: true,
+      _count: {
+        select: { answers: true }
+      }
+    }
+  });
+  return NextResponse.json(questions);
+}
+
+export async function POST(req: Request) {
+  const session = await getServerSession(authOptions);
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const data = await req.json();
+  const question = await prisma.question.create({
+    data: {
+      ...data,
+      authorId: session.user.id
+    }
+  });
+  return NextResponse.json(question);
+}
+
+// app/api/questions/[id]/route.ts
+export async function GET(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
+  const question = await prisma.question.findUnique({
+    where: { id: params.id },
+    include: {
+      author: true,
+      answers: {
+        include: { author: true }
+      },
+      tags: true
+    }
+  });
+  return NextResponse.json(question);
+}
+```
+
+5. UI Component Architecture
+---------------------------
+Prompt: "I'm looking for suggestions on how to structure reusable UI components for my QA application. What's the best approach for component organization?"
+
+Response: Here's a recommended component structure with examples:
+
+```typescript
+// components/ui/Button.tsx
+interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: 'primary' | 'secondary' | 'outline';
+  size?: 'sm' | 'md' | 'lg';
+}
+
+export const Button = ({
+  variant = 'primary',
+  size = 'md',
+  className,
+  children,
+  ...props
+}: ButtonProps) => {
+  return (
+    <button
+      className={cn(
+        'rounded-md font-medium transition-colors',
+        {
+          'bg-blue-600 text-white hover:bg-blue-700': variant === 'primary',
+          'bg-gray-200 text-gray-900 hover:bg-gray-300': variant === 'secondary',
+          'border border-gray-300 hover:bg-gray-100': variant === 'outline',
+          'px-3 py-1.5 text-sm': size === 'sm',
+          'px-4 py-2': size === 'md',
+          'px-6 py-3 text-lg': size === 'lg',
+        },
+        className
+      )}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+};
+
+// components/features/questions/QuestionCard.tsx
+interface QuestionCardProps {
+  question: Question;
+  onVote: (id: string) => void;
+}
+
+export const QuestionCard = ({ question, onVote }: QuestionCardProps) => {
+  return (
+    <div className="rounded-lg border p-4 shadow-sm">
+      <h3 className="text-lg font-semibold">{question.title}</h3>
+      <p className="mt-2 text-gray-600">{question.content}</p>
+      <div className="mt-4 flex items-center gap-4">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onVote(question.id)}
+        >
+          Vote ({question.votes})
+        </Button>
+        <span className="text-sm text-gray-500">
+          {question._count.answers} answers
+        </span>
+      </div>
+    </div>
+  );
+};
+```
+
+6. Performance Optimization
+-------------------------
+Prompt: "What are the key performance optimization techniques I should implement in my Next.js application?"
+
+Response: Here are the key performance optimizations to implement:
+
+1. Image Optimization:
+```typescript
+// Use Next.js Image component
+import Image from 'next/image';
+
+export function OptimizedImage() {
+  return (
+    <Image
+      src="/profile.jpg"
+      alt="Profile"
+      width={500}
+      height={300}
+      priority={true}
+      loading="lazy"
+    />
+  );
+}
+```
+
+2. Route Handlers with Caching:
+```typescript
+// app/api/questions/route.ts
+export const revalidate = 3600; // Revalidate every hour
+
+export async function GET() {
+  const questions = await prisma.question.findMany({
+    cache: 'force-cache',
+    next: { revalidate: 3600 }
+  });
+  return NextResponse.json(questions);
+}
+```
+
+3. Dynamic Imports:
+```typescript
+// Lazy load components
+import dynamic from 'next/dynamic';
+
+const DynamicComponent = dynamic(() => import('./HeavyComponent'), {
+  loading: () => <p>Loading...</p>,
+  ssr: false
+});
+```
+
+7. Database Management Scripts
+----------------------------
+Prompt: "I need to create Python scripts to check if the database is empty and to safely delete data from the database. Can you help me implement these scripts?"
+
+Response: Here are the Python scripts for database management:
+
+```python
+# scripts/check_database.py
+import os
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
+import sys
+
+# Load environment variables
+load_dotenv()
+
+def check_database_empty():
+    try:
+        # Get database URL from environment variable
+        database_url = os.getenv('DATABASE_URL')
+        if not database_url:
+            print("Error: DATABASE_URL environment variable not found")
+            sys.exit(1)
+
+        # Create database engine
+        engine = create_engine(database_url)
+
+        # Connect to database
+        with engine.connect() as connection:
+            # Check if tables exist and have data
+            tables = ['User', 'Question', 'Answer', 'Tag']
+            empty_tables = []
+            non_empty_tables = []
+
+            for table in tables:
+                # Check if table exists
+                result = connection.execute(text(f"""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = '{table.lower()}'
+                    );
+                """))
+                table_exists = result.scalar()
+
+                if not table_exists:
+                    print(f"Table {table} does not exist")
+                    continue
+
+                # Check if table is empty
+                result = connection.execute(text(f"SELECT COUNT(*) FROM {table.lower()};"))
+                count = result.scalar()
+
+                if count == 0:
+                    empty_tables.append(table)
+                else:
+                    non_empty_tables.append(table)
+
+            # Print results
+            if empty_tables:
+                print("\nEmpty tables:")
+                for table in empty_tables:
+                    print(f"- {table}")
+
+            if non_empty_tables:
+                print("\nTables with data:")
+                for table in non_empty_tables:
+                    print(f"- {table}")
+
+            return len(non_empty_tables) == 0
+
+    except Exception as e:
+        print(f"Error checking database: {str(e)}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    is_empty = check_database_empty()
+    if is_empty:
+        print("\nDatabase is empty")
+    else:
+        print("\nDatabase contains data")
+
+# scripts/delete_database_data.py
+import os
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
+import sys
+import time
+
+# Load environment variables
+load_dotenv()
+
+def delete_database_data():
+    try:
+        # Get database URL from environment variable
+        database_url = os.getenv('DATABASE_URL')
+        if not database_url:
+            print("Error: DATABASE_URL environment variable not found")
+            sys.exit(1)
+
+        # Create database engine
+        engine = create_engine(database_url)
+
+        # Connect to database
+        with engine.connect() as connection:
+            # Start transaction
+            with connection.begin():
+                # Get list of tables
+                result = connection.execute(text("""
+                    SELECT table_name 
+                    FROM information_schema.tables 
+                    WHERE table_schema = 'public';
+                """))
+                tables = [row[0] for row in result]
+
+                # Disable foreign key constraints temporarily
+                connection.execute(text("SET CONSTRAINTS ALL DEFERRED;"))
+
+                # Delete data from each table
+                for table in tables:
+                    try:
+                        connection.execute(text(f"TRUNCATE TABLE {table} CASCADE;"))
+                        print(f"Deleted data from {table}")
+                    except Exception as e:
+                        print(f"Error deleting data from {table}: {str(e)}")
+
+                # Re-enable foreign key constraints
+                connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE;"))
+
+            print("\nDatabase data deleted successfully")
+
+    except Exception as e:
+        print(f"Error deleting database data: {str(e)}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    # Ask for confirmation
+    print("WARNING: This will delete all data from the database!")
+    print("Type 'DELETE' to confirm:")
+    confirmation = input().strip()
+
+    if confirmation != "DELETE":
+        print("Operation cancelled")
+        sys.exit(0)
+
+    # Add a small delay for safety
+    print("Deleting data in 5 seconds...")
+    time.sleep(5)
+
+    delete_database_data()
+```
+
+These scripts provide the following functionality:
+
+1. Database Check Script (`check_database.py`):
+   - Checks if the database is empty
+   - Lists all tables and their data status
+   - Handles database connection errors
+   - Uses environment variables for configuration
+   - Provides clear output about database state
+
+2. Database Deletion Script (`delete_database_data.py`):
+   - Safely deletes all data from the database
+   - Requires explicit confirmation
+   - Handles foreign key constraints
+   - Includes safety delay
+   - Provides progress feedback
+   - Uses transactions for data safety
+
+To use these scripts:
+
+1. Create a `.env` file with your database URL:
+```
+DATABASE_URL=postgresql://user:password@localhost:5432/database_name
+```
+
+2. Install required dependencies:
+```bash
+pip install sqlalchemy python-dotenv psycopg2-binary
+```
+
+3. Run the scripts:
+```bash
+# Check database status
+python scripts/check_database.py
+
+# Delete database data
+python scripts/delete_database_data.py
+```
+
+Note: These scripts should be used with caution, especially the deletion script. Always ensure you have backups before running the deletion script.
+
+9. AI-Based Answer Suggestions
+----------------------------
+Prompt: "I want to implement an AI-based answer suggestion feature using Groq API in my Python backend. The feature should analyze the question and provide relevant answer suggestions. How can I implement this?"
+
+Response: Here's how to implement AI-based answer suggestions using Groq API with Python:
+
+```python
+# app/services/ai_service.py
+import os
+from groq import Groq
+from typing import List, Dict, Optional
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class AIService:
+    def __init__(self):
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise ValueError("GROQ_API_KEY environment variable is not set")
+        self.client = Groq(api_key=api_key)
+
+    async def generate_suggestions(
+        self, 
+        question: str, 
+        context: Optional[str] = None
+    ) -> Dict[str, List[str]]:
+        try:
+            prompt = f"""
+            You are an expert QA assistant. Given the following question{context and " and context" or ""}, 
+            provide 3 relevant answer suggestions. Each suggestion should be concise, accurate, and helpful.
+            
+            Question: {question}
+            {context and f"Context: {context}" or ""}
+            
+            Provide the suggestions in the following JSON format:
+            {{
+                "suggestions": ["suggestion1", "suggestion2", "suggestion3"],
+                "confidence": 0.95
+            }}
+            """
+
+            completion = self.client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful QA assistant that provides accurate and relevant answer suggestions."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                model="mixtral-8x7b-32768",
+                temperature=0.7,
+                max_tokens=1000,
+                response_format={"type": "json_object"}
+            )
+
+            response = completion.choices[0].message.content
+            return response
+
+        except Exception as e:
+            print(f"Error generating suggestions: {str(e)}")
+            raise
+
+# app/routers/suggestions.py
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.orm import Session
+from typing import Optional
+from ..database import get_db
+from ..services.ai_service import AIService
+from ..schemas import SuggestionRequest, SuggestionResponse
+
+router = APIRouter()
+ai_service = AIService()
+
+@router.post("/suggestions", response_model=SuggestionResponse)
+async def get_suggestions(
+    request: SuggestionRequest,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Validate question length
+        if len(request.question) < 10 or len(request.question) > 500:
+            raise HTTPException(
+                status_code=400,
+                detail="Question length must be between 10 and 500 characters"
+            )
+
+        # Generate suggestions
+        suggestions = await ai_service.generate_suggestions(
+            question=request.question,
+            context=request.context
+        )
+
+        return suggestions
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to generate suggestions"
+        )
+
+# app/schemas.py
+from pydantic import BaseModel, Field
+from typing import List, Optional
+
+class SuggestionRequest(BaseModel):
+    question: str = Field(..., min_length=10, max_length=500)
+    context: Optional[str] = None
+
+class SuggestionResponse(BaseModel):
+    suggestions: List[str]
+    confidence: float
+
+# app/main.py
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from .routers import auth, suggestions
+
+app = FastAPI()
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(auth.router, prefix="/auth", tags=["auth"])
+app.include_router(suggestions.router, prefix="/api", tags=["suggestions"])
+```
+
+To use this feature:
+
+1. Add the required environment variables to your `.env` file:
+```
+GROQ_API_KEY=your_groq_api_key_here
+DATABASE_URL=postgresql://user:password@localhost:5432/database_name
+SECRET_KEY=your_secret_key_here
+```
+
+2. Install the required dependencies:
+```bash
+pip install fastapi uvicorn sqlalchemy psycopg2-binary python-jose[cryptography] passlib[bcrypt] python-multipart groq python-dotenv
+```
+
+3. Run the application:
+```bash
+uvicorn app.main:app --reload
+```
+
+This implementation includes:
+1. FastAPI backend with async support
+2. Secure API key handling
+3. Error handling and validation
+4. Database integration
+5. JWT-based authentication
+6. CORS configuration
+7. Modular code structure
+
+The feature uses the Mixtral model through Groq API for generating high-quality answer suggestions while maintaining good performance and cost-effectiveness.
+
+// ... rest of the existing code ... 
